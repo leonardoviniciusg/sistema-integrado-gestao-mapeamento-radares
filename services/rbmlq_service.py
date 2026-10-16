@@ -1,11 +1,15 @@
 import json
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 import pandas as pd
 import requests
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from services.address_service import AddressService
+
 
 class RBMLQService:
     def __init__(self, url: str, municipios: list[str]):
@@ -31,6 +35,8 @@ class RBMLQService:
         dados = res.json()
 
         if save_raw_path:
+            save_raw_path = Path(save_raw_path)
+            save_raw_path.parent.mkdir(parents=True, exist_ok=True)
             with open(save_raw_path, "w", encoding="utf-8") as f:
                 json.dump(dados, f, ensure_ascii=False, indent=2)
 
@@ -68,9 +74,6 @@ class RBMLQService:
                 proprietario.get("Nome") if isinstance(proprietario, dict) else item.get("Proprietario.Nome")
             )
 
-            # Tratamento de endereço
-            addr_info = AddressService.processar_endereco(item.get("LocalVerificacao"), item.get("Municipio"), uf="SP")
-
             # Linha consolidada Instrumentos
             instrumentos.append({
                 "NumeroSerie": num_serie,
@@ -82,13 +85,15 @@ class RBMLQService:
                 "UltimoResultado": item.get("UltimoResultado"),
                 "DataUltimaVerificacao": item.get("DataUltimaVerificacao"),
                 "DataValidade": item.get("DataValidade"),
-                # Colunas prontas para receberem os dados da IA:
                 "tipo_local": None,
                 "logradouro_limpo": None,
                 "numero_limpo": None,
                 "rodovia_nome": None,
                 "km_num": None,
-                "local_maps": None
+                "local_maps": None,
+                "UF": None,
+                "latitude": None,
+                "longitude": None
             })
 
             for f in faixas:
@@ -121,11 +126,46 @@ class RBMLQService:
 
         return df_inst, df_faixas, df_hist
 
-    def salvar_excel(self, df_inst: pd.DataFrame, df_faixas: pd.DataFrame, df_hist: pd.DataFrame, out_path: Path):
+    def salvar_excel(self, df_inst: pd.DataFrame, df_faixas: pd.DataFrame, df_hist: pd.DataFrame, out_path: Path | str):
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        agora_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        df_controle = pd.DataFrame([
+            {"Parametro": "Ultima Atualizacao", "Valor": agora_str},
+            {"Parametro": "Total de Instrumentos", "Valor": len(df_inst)},
+            {"Parametro": "Total de Faixas Monitoradas", "Valor": len(df_faixas)},
+            {"Parametro": "Total de Historicos de Verificacao", "Valor": len(df_hist)},
+            {"Parametro": "Fonte dos Dados", "Valor": "RBMLQ / PSIE - Inmetro"},
+            {"Parametro": "Status", "Valor": "Atualizado com Sucesso"}
+        ])
+
         with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            for nome_aba, df_aba in [("Instrumentos", df_inst), ("Faixas", df_faixas), ("Historico", df_hist)]:
-                df_aba.to_excel(writer, sheet_name=nome_aba, index=False)
-                ws = writer.sheets[nome_aba]
-                for col in ws.columns:
-                    max_len = max(len(str(cell.value or "")) for cell in col)
-                    ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 3, 12), 50)
+            df_controle.to_excel(writer, sheet_name="Controle", index=False)
+            df_inst.to_excel(writer, sheet_name="Instrumentos", index=False)
+            df_faixas.to_excel(writer, sheet_name="Faixas", index=False)
+            df_hist.to_excel(writer, sheet_name="Historico", index=False)
+
+            wb = writer.book
+
+            estilo_tabela = TableStyleInfo(
+                name="TableStyleMedium9",
+                showFirstColumn=False,
+                showLastColumn=False,
+                showRowStripes=True,
+                showColumnStripes=False
+            )
+
+            for ws in wb.worksheets:
+                if ws.max_row > 1:
+                    max_col_letter = get_column_letter(ws.max_column)
+                    ref = f"A1:{max_col_letter}{ws.max_row}"
+                    nome_tab = f"Tab_{ws.title}"
+                    tab = Table(displayName=nome_tab, ref=ref)
+                    tab.tableStyleInfo = estilo_tabela
+                    ws.add_table(tab)
+
+                    for col in ws.columns:
+                        col_letter = get_column_letter(col[0].column)
+                        max_len = max(len(str(cell.value or "")) for cell in col)
+                        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 14), 45)
