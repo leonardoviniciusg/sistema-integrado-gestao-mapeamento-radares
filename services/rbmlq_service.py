@@ -82,6 +82,7 @@ class RBMLQService:
                 "LocalVerificacao": item.get("LocalVerificacao"),
                 "Municipio": item.get("Municipio"),
                 "TipoMedidor": item.get("TipoMedidor"),
+                "Faixas": sum(1 for f in faixas if isinstance(f, dict)),
                 "UltimoResultado": item.get("UltimoResultado"),
                 "DataUltimaVerificacao": item.get("DataUltimaVerificacao"),
                 "DataValidade": item.get("DataValidade"),
@@ -93,7 +94,8 @@ class RBMLQService:
                 "local_maps": None,
                 "UF": None,
                 "latitude": None,
-                "longitude": None
+                "longitude": None,
+                "metodo_geocodificacao": None
             })
 
             for f in faixas:

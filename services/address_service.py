@@ -7,9 +7,6 @@ class AddressService:
     # Converte endereços sem nº predial do tipo "Av. X, a 95m da Rua Y" / "150m antes da R. Y" em Cruzamento
     CONVERTER_REFERENCIA_TRANSVERSAL_EM_CRUZAMENTO = True
 
-    # Preserva o número predial quando houver deslocamento em metros (ex: "Nº 778 mais 3 metros" -> "778")
-    PRESERVAR_NUMERO_COM_DESLOCAMENTO = False
-
     # 1. Tipos de via: expandidos apenas no início de cada logradouro
     PREFIXOS_VIA = [
         (r"^(?:ESTR|ESTRADA)\.?\s*MUN(?:ICIPAL)?\b\.?", "Estrada Municipal"),
@@ -221,7 +218,7 @@ class AddressService:
     @staticmethod
     def _padronizar_rodovia(nome_raw: str, municipio: str = "") -> str:
         nome = nome_raw.upper().replace("ROD.", "").replace("RODOVIA", "").strip()
-        match_spa = re.search(r"\b(SPA|SPI)\s*[-/]?\s*(\d{1,3})\s*[/]\s*(\d{1,3})\b", nome)
+        match_spa = re.search(r"\b(SPA|SPI|SPD)\s*[-/]?\s*(\d{1,3})\s*[/]\s*(\d{1,3})\b", nome)
         if match_spa:
             tipo, n1, n2 = match_spa.groups()
             return f"{tipo}-{int(n1):03d}/{int(n2):03d}"
@@ -266,7 +263,7 @@ class AddressService:
 
         # 1. Rodovia
         is_rodovia = bool(
-            re.search(r"\b(SP|BR|ROD|SPA|SPI)\s*[-/]?\s*\d{1,3}\b", local_limpo, re.IGNORECASE)
+            re.search(r"\b(SP|BR|ROD|SPA|SPI|SPD)\s*[-/]?\s*\d{1,3}\b", local_limpo, re.IGNORECASE)
             and re.search(r"\bKM\b", local_limpo, re.IGNORECASE)
         )
 
@@ -290,7 +287,7 @@ class AddressService:
                 r"|\s+COM\s+(?=(?:A\s+)?(?:RUA|R\b\.?|AV\b\.?|AVENIDA|ESTR\b\.?|PRAÇA|PCA\b\.?|PÇA|ALAMEDA|VIA)\b)"
             )
 
-            # Separadores de referência transversal (ex: "150m antes da R. Y", "a 95m da Av. Y", "após a Rua Y", "prox. ao viaduto Av. Y")
+            # Separadores de referência transversal
             sep_transversal = (
                 r"(?:[,\s]+(?:a\s+)?\d+(?:[,\.]\d+)?\s*(?:m|metros?|metro)\s+(?:antes\s+da|ap[óo]s\s+a|da)\s+"
                 r"|[,\s]+pr[óo]x\.?\s*ao\s+viaduto\s+"
@@ -322,8 +319,7 @@ class AddressService:
 
                 local_maps = f"{logradouro_limpo}, {municipio} - {uf}"
 
-            # 3. Urbano
-            # 3. Urbano (ajuste opcional para máxima precisão no Google Maps)
+            # 3. Urbano (preservando números prediais mesmo quando precedidos de "em frente ao", "oposto ao", "próximo ao", "altura")
             else:
                 tipo_local = "Urbano"
                 rodovia_nome = None
@@ -331,22 +327,18 @@ class AddressService:
 
                 local_sem_parenteses = re.sub(r"\s*\(.*?\)", "", local_avaliar)
 
-                # Só descarta o número se for 'oposto', 'próximo', 'em frente', 'defronte', 'altura' ou 's/n'
-                tem_referencia_vaga = bool(
-                    re.search(
-                        r"(?i)\b(oposto|pr[óo]x(?:imo)?|defronte|em\s+frente|alt(?:ura)?|aprox(?:imadamente)?|s/n)\b",
-                        local_sem_parenteses
-                    )
-                )
-
-                # Procura número predial explícito (ex: "Nº 778 mais 3 metros" preserva o 778; "a 260m da..." vira S/N)
+                # Procura número predial explícito (com Nº/N., após vírgula, ou após oposto/em frente/próximo/altura)
+                # Garante via negative lookahead que o número não é distância em metros (m, metros, km) nem faixa (fx)
                 match_num = re.search(
-                    r"(?:[,\s]+(?:N[º°\.]*|NR\.?|NUMERAL)\s*|\s*,\s*)(\d{1,5})\b(?!\s*(?:m|metros?|metro|km)\b)",
+                    r"(?:[,\s]+(?:N[º°\.]*|NR\.?|NUMERAL)\s*|"
+                    r"\b(?:oposto|em\s+frente|defronte|pr[óo]x(?:imo)?\.?|alt(?:ura)?\.?)\s*(?:ao|do|da)?\s*(?:N[º°\.]*|NR\.?|NUMERAL)?\s*|"
+                    r"\s*,\s*)"
+                    r"(\d{1,5})\b(?!\s*(?:m|metros?|metro|km)\b)",
                     local_sem_parenteses,
                     re.IGNORECASE
                 )
 
-                if not tem_referencia_vaga and match_num:
+                if match_num and int(match_num.group(1)) > 0:
                     numero_limpo = str(int(match_num.group(1)))
                 else:
                     numero_limpo = "S/N"
@@ -354,7 +346,6 @@ class AddressService:
                 nome_rua = cls._formatar_nome_via(cls._limpar_complementos_via(local_avaliar), exigir_tipo_via=True)
                 logradouro_limpo = nome_rua
 
-                # Na string de busca do Maps, omite ", S/N" para não poluir a query da API
                 if numero_limpo == "S/N":
                     local_maps = f"{logradouro_limpo}, {municipio} - {uf}"
                 else:

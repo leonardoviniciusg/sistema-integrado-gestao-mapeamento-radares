@@ -9,6 +9,7 @@ from config import (
     MUNICIPIOS_ALVO,
     PROCESSED_DIR,
     RAW_DIR,
+    GEOCODED_DIR,
     RBMLQ_URL,
     ONEDRIVE_EXCEL,
 )
@@ -20,7 +21,7 @@ CAMINHO_EXCEL = PROCESSED_DIR / "medidores_processados.xlsx"
 COLUNAS_TRATADAS = [
     "tipo_local", "logradouro_limpo", "numero_limpo",
     "rodovia_nome", "km_num", "local_maps", "UF",
-    "latitude", "longitude"
+    "latitude", "longitude", "metodo_geocodificacao"
 ]
 
 def main():
@@ -50,30 +51,43 @@ def main():
         if col not in df_inst.columns:
             df_inst[col] = None
 
-    # 3. Padronização de endereços (Regex local instantâneo)
-    mascara_pendentes = df_inst["logradouro_limpo"].isna() | (df_inst["logradouro_limpo"] == "")
-    total_pendentes = mascara_pendentes.sum()
-    
-    if total_pendentes > 0:
-        print(f"Padronizando endereços para {total_pendentes} registros...")
-        for idx in df_inst[mascara_pendentes].index:
-            local_raw = df_inst.at[idx, "LocalVerificacao"]
-            muni = df_inst.at[idx, "Municipio"]
-            res = AddressService.processar_endereco(local_raw, muni, uf="SP")
-            for col, val in res.items():
-                df_inst.at[idx, col] = val
+    # 3. Padronização de endereços (sempre reavalia via Regex e invalida lat/lon se local_maps mudou)
+    print(f"Padronizando endereços para {len(df_inst)} registros...")
+    enderecos_alterados = 0
+    for idx in df_inst.index:
+        local_raw = df_inst.at[idx, "LocalVerificacao"]
+        muni = df_inst.at[idx, "Municipio"]
+        local_maps_antigo = str(df_inst.at[idx, "local_maps"] or "")
+        
+        res = AddressService.processar_endereco(local_raw, muni, uf="SP")
+        novo_local_maps = str(res["local_maps"] or "")
+        
+        if local_maps_antigo and local_maps_antigo != novo_local_maps:
+            df_inst.at[idx, "latitude"] = None
+            df_inst.at[idx, "longitude"] = None
+            df_inst.at[idx, "metodo_geocodificacao"] = None
+            enderecos_alterados += 1
 
-    # 4. Geocodificação (Google Maps API + Cache local)
+        for col, val in res.items():
+            df_inst.at[idx, col] = val
+
+    if enderecos_alterados > 0:
+        print(f"{enderecos_alterados} registros tiveram 'local_maps' aprimorado e terão coordenadas atualizadas.")
+
+    # 4. Geocodificação (DER/SP + DNIT SP + Marcos KM + Google Maps API + Cache local)
     print("Iniciando verificação de Latitude e Longitude...")
     maps_key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not maps_key:
         raise ValueError("GOOGLE_MAPS_API_KEY não encontrada nas variáveis de ambiente.")
     
-    geocode_service = GeocodeService(api_key=maps_key)
+    geocode_service = GeocodeService(api_key=maps_key, cache_dir=GEOCODED_DIR, raw_dir=RAW_DIR)
     df_inst = geocode_service.processar_dataframe(df_inst)
 
+    print("\nResumo por Método de Geocodificação:")
+    print(df_inst["metodo_geocodificacao"].value_counts(dropna=False).to_string())
+
     # 5. Salvar base completa nas abas do Excel (Local e Nuvem fixa)
-    print(f"Salvando planilha local em {CAMINHO_EXCEL}...")
+    print(f"\nSalvando planilha local em {CAMINHO_EXCEL}...")
     service_rbmlq.salvar_excel(df_inst, df_faixas, df_hist, out_path=CAMINHO_EXCEL)
 
     try:

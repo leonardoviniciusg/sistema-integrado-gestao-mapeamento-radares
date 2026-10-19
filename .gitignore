@@ -1,25 +1,18 @@
-# Ambientes virtuais Python
+# Arquivos de ambiente e credenciais
+.env
+*.env
+
+# Ambientes virtuais
 venv/
 .venv/
 env/
-ENV/
 
-# Arquivos de variáveis de ambiente com chaves de API (NUNCA SUBIR)
-.env
-.env.*
-!.env.example
-
-# Caches do Python
+# Python Cache
 __pycache__/
 *.py[cod]
-*$py.class
 
-# Dados brutos temporários / planilhas intermediárias (opcional manter apenas cache)
-data/raw/*.json
-# Se quiser versionar a planilha final, comente a linha abaixo:
-# data/processed/*.xlsx
-
-# Cache e logs do sistema
-.DS_Store
-Thumbs.db
-*.log
+# Arquivos de dados pesados e saídas (mantenha versionado apenas o código)
+data/processed/
+data/geocoded/
+data/raw/medidores_bruto.json
+data/raw/*.xlsx
