@@ -8,6 +8,7 @@ import pandas as pd
 
 from config import GEOCODED_DIR, RAW_DIR
 from services.highway_service import HighwayService
+from services.snapping_service import SnappingService
 
 NOMES_RODOVIAS = {
     "BR-101": "Rodovia Governador Mário Covas BR-101",
@@ -124,6 +125,7 @@ class GeocodeService:
             geocoded_dir=cache_dir,
             centros_municipios=CENTROS_MUNICIPIOS_IBGE
         )
+        self.snapping_service = SnappingService(api_key=chave, cache_dir=cache_dir)
 
     def _carregar_cache(self) -> pd.DataFrame:
         cols = ["NumeroSerie", "latitude", "longitude", "tipo_local", "local_maps", "metodo_geocodificacao"]
@@ -295,7 +297,10 @@ class GeocodeService:
             print(f"{atualizados_rod} instrumentos de rodovias atualizados via bases oficiais!")
 
         # 2. Cache local (preserva métodos oficiais e reaproveita coordenadas válidas)
-        metodos_oficiais = ("DER_SP_SERIE", "DER_SP_RODOVIA_KM", "DNIT_RODOVIA_KM", "ANTT_RODOVIA_KM", "DNIT_VGEO_OFICIAL", "DER_SP_PROJETO")
+        metodos_oficiais = (
+            "DER_SP_SERIE", "DER_SP_RODOVIA_KM", "DNIT_RODOVIA_KM",
+            "ANTT_RODOVIA_KM", "DNIT_VGEO_OFICIAL", "DER_SP_PROJETO"
+        )
         if not self.cache_df.empty:
             cache_map = self.cache_df.drop_duplicates(subset=["NumeroSerie"], keep="last").set_index("NumeroSerie").to_dict(orient="index")
             recuperados_cache = 0
@@ -366,56 +371,78 @@ class GeocodeService:
             if pd.isna(row.get("metodo_geocodificacao")) or not str(row.get("metodo_geocodificacao")).strip():
                 df_geo.at[idx, "metodo_geocodificacao"] = "GOOGLE_CACHE"
 
-        if total_pendentes == 0:
-            print("Todas as coordenadas estão validadas e atualizadas!")
-            cols_salvar = ["NumeroSerie", "latitude", "longitude", "tipo_local", "local_maps", "metodo_geocodificacao"]
-            novos_dados = df_geo[cols_salvar].dropna(subset=["latitude", "longitude"])
-            self.cache_df = pd.concat([self.cache_df, novos_dados]).drop_duplicates(subset=["NumeroSerie"], keep="last")
-            self._salvar_cache()
-            return df_geo
+        # 5. Geocodificação de pendentes na API do Google
+        if total_pendentes > 0:
+            print(f"Total de registros para geocodificar na API do Google: {total_pendentes}")
+            contador = 0
+            for idx, row in df_geo[filtro_pendentes].iterrows():
+                contador += 1
+                tipo = str(row.get("tipo_local") or "Urbano")
+                municipio = str(row.get("Municipio") or "")
+                num_serie = str(row.get("NumeroSerie") or "")
 
-        print(f"Total de registros para geocodificar na API do Google: {total_pendentes}")
+                if tipo == "Rodovia":
+                    rodovia = str(row.get("rodovia_nome") or "")
+                    km_num = row.get("km_num")
+                    km_val = float(km_num) if pd.notna(km_num) else None
+                    print(f"Buscando ({contador}/{total_pendentes}) [Rodovia]: {rodovia} KM {km_val} - {municipio}")
+                    lat, lon, metodo = self._buscar_coordenada_rodovia(num_serie, rodovia, km_val, municipio)
+                else:
+                    query = str(row.get("local_maps") or "")
+                    print(f"Buscando ({contador}/{total_pendentes}) [{tipo}]: {query}")
+                    lat, lon, metodo = self._buscar_coordenada_urbana(query, municipio, tipo_local=tipo)
 
-        contador = 0
-        for idx, row in df_geo[filtro_pendentes].iterrows():
-            contador += 1
-            tipo = str(row.get("tipo_local") or "Urbano")
-            municipio = str(row.get("Municipio") or "")
-            num_serie = str(row.get("NumeroSerie") or "")
+                if lat and lon:
+                    df_geo.at[idx, "latitude"] = lat
+                    df_geo.at[idx, "longitude"] = lon
+                    df_geo.at[idx, "metodo_geocodificacao"] = metodo
+                    print(f"  -> Sucesso [{metodo}]: Lat {lat:.6f}, Lon {lon:.6f}")
+                else:
+                    print("  -> Não encontrado.")
 
-            if tipo == "Rodovia":
-                rodovia = str(row.get("rodovia_nome") or "")
-                km_num = row.get("km_num")
-                km_val = float(km_num) if pd.notna(km_num) else None
-                print(f"Buscando ({contador}/{total_pendentes}) [Rodovia]: {rodovia} KM {km_val} - {municipio}")
-                lat, lon, metodo = self._buscar_coordenada_rodovia(num_serie, rodovia, km_val, municipio)
-            else:
-                query = str(row.get("local_maps") or "")
-                print(f"Buscando ({contador}/{total_pendentes}) [{tipo}]: {query}")
-                lat, lon, metodo = self._buscar_coordenada_urbana(query, municipio, tipo_local=tipo)
+                time.sleep(0.15)
 
-            if lat and lon:
-                df_geo.at[idx, "latitude"] = lat
-                df_geo.at[idx, "longitude"] = lon
-                df_geo.at[idx, "metodo_geocodificacao"] = metodo
-                print(f"  -> Sucesso [{metodo}]: Lat {lat:.6f}, Lon {lon:.6f}")
-                novo_reg = pd.DataFrame([{
-                    "NumeroSerie": num_serie,
-                    "latitude": lat,
-                    "longitude": lon,
-                    "tipo_local": tipo,
-                    "local_maps": row.get("local_maps"),
-                    "metodo_geocodificacao": metodo
-                }])
-                self.cache_df = pd.concat([self.cache_df, novo_reg]).drop_duplicates(subset=["NumeroSerie"], keep="last")
-            else:
-                print("  -> Não encontrado.")
+        # 6. Alinhamento Global no Eixo da Via (Snapping to Road)
+        # Executa em todos os radares urbanos com número de porta (novos ou vindos do cache)
+        print("Executando alinhamento no eixo da via (Snapping to Road)...")
+        snapped_count = 0
+        for idx, row in df_geo.iterrows():
+            tipo = str(row.get("tipo_local") or "")
+            metodo = str(row.get("metodo_geocodificacao") or "")
+            lat = row.get("latitude")
+            lon = row.get("longitude")
 
-            time.sleep(0.15)
+            # Snapping exclusivo para endereços urbanos com número predial
+            deve_ajustar = (
+                tipo == "Urbano"
+                and pd.notna(lat) and pd.notna(lon)
+                and not metodo.endswith("_SNAPPED")
+                and (
+                    metodo in ("GOOGLE_ROOFTOP", "GOOGLE_INTERPOLATED")
+                    or (metodo == "GOOGLE_CACHE" and str(row.get("numero_limpo")) != "S/N")
+                )
+            )
 
+            if deve_ajustar:
+                lat_rua, lon_rua, ajustou = self.snapping_service.ajustar_para_eixo_rua(
+                    float(lat), float(lon), max_dist_metros=40.0
+                )
+                if ajustou:
+                    df_geo.at[idx, "latitude"] = lat_rua
+                    df_geo.at[idx, "longitude"] = lon_rua
+                    df_geo.at[idx, "metodo_geocodificacao"] = f"{metodo}_SNAPPED"
+                    snapped_count += 1
+
+        if snapped_count > 0:
+            print(f"{snapped_count} radares urbanos foram projetados com precisão no eixo do asfalto!")
+        else:
+            print("Todos os radares urbanos elegíveis já estão alinhados ao asfalto.")
+
+        # 7. Salva cache unificado
         cols_salvar = ["NumeroSerie", "latitude", "longitude", "tipo_local", "local_maps", "metodo_geocodificacao"]
         novos_dados = df_geo[cols_salvar].dropna(subset=["latitude", "longitude"])
         self.cache_df = pd.concat([self.cache_df, novos_dados]).drop_duplicates(subset=["NumeroSerie"], keep="last")
         self._salvar_cache()
-        print(f"Cache atualizado e salvo em {self.cache_path}.")
+        print(f"Cache de coordenadas atualizado e salvo em {self.cache_path}.")
+
         return df_geo
