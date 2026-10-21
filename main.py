@@ -90,11 +90,6 @@ def main():
     print(f"\nSalvando planilha local em {CAMINHO_EXCEL}...")
     service_rbmlq.salvar_excel(df_inst, df_faixas, df_hist, out_path=CAMINHO_EXCEL)
 
-    if ONEDRIVE_EXCEL is None:
-        print("Cópia no OneDrive desativada. Configure ONEDRIVE_DIR no .env para habilitar.")
-        print("Processo concluído com sucesso!")
-        return
-
     try:
         ONEDRIVE_EXCEL.parent.mkdir(parents=True, exist_ok=True)
         print(f"Sincronizando com a nuvem em {ONEDRIVE_EXCEL}...")

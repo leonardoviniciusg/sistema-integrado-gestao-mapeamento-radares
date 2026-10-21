@@ -1,154 +1,117 @@
 # Sistema Integrado de Gestão e Mapeamento de Radares
 
-Sistema em Python para extrair dados do PSIE/RBMLQ (Inmetro), padronizar endereços, geocodificar medidores de velocidade e acompanhar instrumentos e validade de laudos em um painel operacional local.
+Sistema em Python para extração, padronização cadastral, geocodificação em múltiplas camadas oficiais e consolidação operacional de medidores de velocidade (radares de trânsito) monitorados pelo Inmetro/IPEM na Região Metropolitana do Vale do Paraíba e Litoral Norte (SP).
 
-O recorte territorial é definido em `config.py`: municípios do Vale do Paraíba, Litoral Norte e municípios próximos de São Paulo.
+---
 
-## Funcionalidades atuais
+## 🚀 Visão Geral e Funcionalidades
 
-- Extração da base de medidores da RBMLQ, com instrumentos, faixas monitoradas e histórico de verificações.
-- Padronização de endereços urbanos, cruzamentos, rodovias e marcos quilométricos.
-- Atualização incremental por número de série: preserva campos tratados da planilha anterior e invalida coordenadas quando o endereço padronizado muda.
-- Geocodificação com bases DER-SP, DNIT e ANTT, espacialização VGEO/SGPLAN e Google Maps.
-- Reaproveitamento de coordenadas em caches CSV e validação por distância ao centro municipal. Essa validação é uma aproximação por raio, não uma conferência contra o polígono do município.
-- Alinhamento de coordenadas urbanas elegíveis ao eixo da via, via OSRM e fallback Google Roads, com limite de deslocamento de 40 metros.
-- Planilha Excel formatada com abas `Controle`, `Instrumentos`, `Faixas` e `Historico`.
-- Cópia opcional da planilha para uma pasta local sincronizada pelo OneDrive.
-- Dashboard Flask com mapa Leaflet, tabela, filtros combinados, indicadores, relatórios e atualização da base com logs em tempo real.
+- **Extração Automatizada (RBMLQ / PSIE - Inmetro):** Download e processamento das bases oficiais de instrumentos de medição, faixas monitoradas e histórico metrológico de verificações.
+- **Padronização e Canonização Textual de Endereços:** Normalização por expressões regulares para rodovias, cruzamentos e vias urbanas (expansão de tipos de logradouro, títulos de vias, correção ortográfica e preservação de números prediais de referência).
+- **Pipeline de Geocodificação Híbrido em Múltiplas Camadas (Sem Duplicidades):**
+  - **DER/SP (Estadual):** Mapeamento por número de série e marco quilométrico (KM) oficial na malha rodoviária estadual (`SP-xxx`, `SPA-xxx`, `SPI-xxx`).
+  - **DNIT (Federal - PNCV):** Cruzamento direto com a base oficial de radares do Plano Nacional de Controle de Velocidade.
+  - **ANTT (Concessões Federais):** Mapeamento georreferenciado de rodovias concedidas sob supervisão federal (ex: BR-116/Dutra e BR-101/Rio-Santos via CCR RioSP).
+  - **VGEO / SGPLAN (DNIT):** Consulta automatizada ao serviço oficial de espacialização geodésica em trecho vetorial para rodovias federais.
+  - **Google Maps Geocoding API:** Busca refinada com fallback para endereços urbanos (Rooftop, Interpolated) e cruzamentos físicos validados.
+- **Cache Local e Otimização de Custos:** Estrutura persistente de cache geográfico em disco (`.csv`), evitando requisições redundantes a APIs pagas.
+- **Exportação Multiformato e Nuvem:** Geração de planilha analítica formatada com tabelas e metadados (`.xlsx`), pronta para importação direta no **Google My Maps** ou sincronização em diretório local/nuvem (OneDrive).
 
-## Estrutura
+---
 
-```text
+## 📁 Estrutura do Projeto
+
+```
 .
-├── main.py                       # Orquestra extração, tratamento e geocodificação
-├── config.py                     # Diretórios, fonte e municípios-alvo
-├── requirements.txt              # Dependências Python
-├── .env.example                  # Modelo de configuração
-├── services/
-│   ├── rbmlq_service.py          # Extração, estruturação e exportação Excel
-│   ├── address_service.py        # Padronização de endereços
-│   ├── highway_service.py        # Bases rodoviárias e consulta VGEO
-│   ├── geocode_service.py        # Geocodificação, validação e cache
-│   ├── snapping_service.py       # Ajuste ao eixo da via
-│   └── vgeo_service.py           # Serviço auxiliar de consulta VGEO
-├── dashboard_v1/
-│   ├── app.py                    # Servidor Flask e APIs
-│   └── templates/index.html      # Interface do painel
-├── tests/                        # Testes de regressão
-└── data/
-    ├── raw/                      # Dados brutos e bases rodoviárias
-    ├── geocoded/                 # Caches de coordenadas e snapping
-    └── processed/                # Planilha consolidada e análises locais
+├── config.py                 # Configurações de diretórios, URLs oficiais e municípios-alvo
+├── main.py                   # Orquestrador do fluxo ETL (Extração, Tratamento e Geocodificação)
+├── requirements.txt          # Dependências do projeto
+├── .env.example              # Modelo de variáveis de ambiente
+├── .gitignore                # Regras de exclusão do Git
+├── README.md                 # Documentação técnica do sistema
+├── data/
+│   ├── raw/                  # Arquivos brutos baixados (PSIE JSON, DER/SP CSV, DNIT XLSX, ANTT CSV)
+│   ├── geocoded/             # Caches locais (coordenadas_cache.csv, radares_dnit_sp.csv, vgeo_cache.csv)
+│   └── processed/            # Planilha final consolidada (medidores_processados.xlsx)
+└── services/
+    ├── address_service.py    # Padronização, limpeza e classificação de vias e logradouros
+    ├── rbmlq_service.py      # Extração da API RBMLQ/PSIE e formatação estruturada do Excel
+    ├── highway_service.py    # Integração multibase de rodovias (DER/SP, DNIT, ANTT e VGEO)
+    └── geocode_service.py    # Orquestrador de geocodificação, validação de limites municipais e Google Maps
 ```
 
-## Instalação e configuração
+---
 
-Use Python 3.10 ou superior, com versão compatível com as dependências fixadas em `requirements.txt`.
+## 🏛️ Fontes de Dados e Camadas de Geocodificação
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
+A coluna `metodo_geocodificacao` gerada na planilha final classifica a origem do ponto geográfico em ordem estrita de precedência:
+
+| Método | Origem | Nível de Precisão |
+| :--- | :--- | :---: |
+| `DER_SP_SERIE` | Base Oficial DER/SP (casamento por Número de Série) | Máxima (Ponto do Laudo) |
+| `DER_SP_RODOVIA_KM` | Base Oficial DER/SP (casamento por Rodovia + KM exato) | Alta (Marco DER) |
+| `DNIT_RODOVIA_KM` | Base PNCV do DNIT (casamento por Rodovia Federal + KM) | Alta (Marco DNIT) |
+| `ANTT_RODOVIA_KM` | Base de Concessões da ANTT (CCR RioSP na BR-116 / BR-101) | Alta (Pórtico da Concessão) |
+| `DNIT_VGEO_OFICIAL` | API GeoServer/SGPLAN do DNIT (espacialização linear de eixo) | Alta (Eixo da Rodovia) |
+| `DER_SP_PROJETO` | Projeto Executivo Georreferenciado do DER-SP | Alta (Eixo da Pista) |
+| `GOOGLE_ROOFTOP` | Google Maps Geocoding API (número predial exato) | Alta (Fachada do Imóvel) |
+| `GOOGLE_INTERPOLATED`| Google Maps Geocoding API (interpolação na extensão da via) | Média-Alta |
+| `GOOGLE_INTERSECTION`| Google Maps Geocoding API (cruzamento/esquina validada) | Média-Alta |
+| `GOOGLE_APPROXIMATE` | Google Maps Geocoding API (via sem número predial) | Média |
+| `GOOGLE_CACHE` | Cache local reaproveitado sem custo adicional de API | Depende da busca inicial |
+
+---
+
+## 🛠️ Tecnologias Utilizadas
+
+- **Python 3.10+**
+- **Pandas / NumPy:** Manipulação vetorial e processamento de dados estruturados.
+- **OpenPyXL:** Geração e estilização de planilhas Excel tabuladas.
+- **Requests & Urllib3:** Consumo de APIs REST (Inmetro, DNIT CKAN, ANTT CKAN, VGEO).
+- **Google Maps Services (Python):** Geocodificação urbana e tratamento de interseções.
+- **Python-dotenv:** Gerenciamento seguro de configurações de ambiente.
+
+---
+
+## ⚙️ Instalação e Execução
+
+### 1. Clonar o repositório
+
+```bash
+git clone https://github.com/leonardoviniciusg/sistema-integrado-gestao-mapeamento-radares.git
+cd sistema-integrado-gestao-mapeamento-radares
 ```
 
-Preencha o `.env` na raiz:
+### 2. Criar e ativar o ambiente virtual
 
-```dotenv
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Linux / macOS
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3. Instalar dependências
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configurar variáveis de ambiente
+
+Crie um arquivo `.env` na raiz do projeto com base no `.env.example`:
+
+```env
 GOOGLE_MAPS_API_KEY=sua_chave_aqui
-# Opcional: caminho da pasta local sincronizada pelo OneDrive.
-ONEDRIVE_DIR=
 ```
 
-A chave Google Maps é exigida pelo fluxo atual de `main.py`. O alinhamento pode usar Google Roads quando o OSRM não retorna um ponto. As APIs Google devem estar habilitadas conforme o uso e podem gerar custos; os caches reduzem consultas repetidas.
+### 5. Executar o pipeline
 
-Para habilitar a cópia no OneDrive, defina `ONEDRIVE_DIR` com o caminho completo da pasta de destino. Deixe vazio para salvar somente a planilha local. O programa grava nessa pasta; a sincronização com a nuvem depende do cliente OneDrive. Uma falha nessa cópia gera um aviso e preserva o resultado local.
-
-## Executar o processamento
-
-Na raiz do projeto, com o ambiente virtual ativado:
-
-```powershell
+```bash
 python main.py
 ```
 
-O fluxo baixa a base PSIE, seleciona os municípios configurados, recupera campos tratados da planilha anterior, padroniza endereços, atualiza coordenadas e grava `data/processed/medidores_processados.xlsx`.
-
-A extração e as consultas de geocodificação dependem de acesso à internet. Os caches e a planilha são arquivos locais persistentes.
-
-## Executar o dashboard
-
-```powershell
-python dashboard_v1/app.py
-```
-
-Abra [o painel local](http://127.0.0.1:5000). Gere a planilha com `python main.py` antes do primeiro uso. O painel lê as abas `Controle` e `Instrumentos`; não usa banco de dados separado.
-
-### Consultas e indicadores
-
-- Indicadores gerais: instrumentos, faixas, laudos vencidos, a vencer em 90 dias e vigentes além desse prazo.
-- Indicadores da seleção: os mesmos totais recalculados pelos filtros.
-- Busca por série, endereço, município ou empresa.
-- Filtros por proprietário, município, ano mínimo da última verificação, validade, resultado, tipo de local e método de geocodificação.
-- Mapa com cores por empresa, detalhes do instrumento e acesso ao Google Street View.
-- Tabela com todos os registros da seleção, inclusive os que não possuem coordenadas. Esses registros aparecem como “Sem coordenadas” e não geram marcadores ou links de Street View.
-- Contagem separada de pontos plotados e registros sem coordenadas.
-
-As datas de validade são comparadas por dia: um laudo com vencimento hoje entra em “a vencer”. O limite de 90 dias é inclusivo. Registros sem data válida entram no total, mas não nos três indicadores de validade. Datas e horários seguem o relógio local do computador que executa o servidor.
-
-### Atualização, logs e exportação
-
-O botão **Atualizar Base** executa `main.py` com o mesmo interpretador Python do painel. O servidor impede uma segunda atualização simultânea nessa instância e transmite a saída por Server-Sent Events. A conclusão distingue sucesso de falha pelo código de saída do processo.
-
-Relatórios disponíveis:
-
-- CSV dos laudos vencidos.
-- CSV dos laudos a vencer em até 90 dias.
-- Download do Excel completo.
-- CSV da tabela filtrada, incluindo instrumentos sem coordenadas.
-
-Os CSVs usam separador `;` e UTF-8 com BOM para facilitar a abertura no Excel. São gravados em `dashboard_v1/`. O botão de limpeza de cache remove diretórios `__pycache__` e `.cache`; os caches geográficos CSV em `data/geocoded/` permanecem disponíveis.
-
-O servidor fornecido executa em modo de desenvolvimento (`debug=True`), no endereço local e porta 5000. Não há autenticação implementada. Uma implantação compartilhada exige configuração própria de servidor e controle de acesso.
-
-## Métodos e limites da geocodificação
-
-A coluna `metodo_geocodificacao` registra a origem das coordenadas:
-
-| Método | Origem |
-| --- | --- |
-| `DER_SP_SERIE` | Correspondência por número de série na base DER-SP |
-| `DER_SP_RODOVIA_KM` | Correspondência por rodovia e quilômetro no DER-SP |
-| `DNIT_RODOVIA_KM` | Base de radares do DNIT |
-| `ANTT_RODOVIA_KM` | Base de concessões da ANTT |
-| `DNIT_VGEO_OFICIAL` | Espacialização no eixo rodoviário pelo VGEO/SGPLAN |
-| `DER_SP_PROJETO` | Referências de projeto rodoviário presentes no código |
-| `GOOGLE_ROOFTOP` | Coordenada de imóvel retornada pelo Google |
-| `GOOGLE_INTERPOLATED` | Coordenada interpolada pelo Google |
-| `GOOGLE_INTERSECTION` | Resultado de cruzamento |
-| `GOOGLE_APPROXIMATE` | Resultado aproximado |
-| `GOOGLE_CACHE` | Coordenada reaproveitada sem método original disponível |
-| `MUNICIPIO_IBGE_FALLBACK` | Centro municipal usado quando as buscas não resolvem o endereço |
-| Sufixo `_SNAPPED` | Coordenada urbana ajustada ao eixo da via |
-
-Os métodos oficiais são priorizados e preservados no reaproveitamento do cache. Coordenadas aproximadas e centros municipais não comprovam a posição física exata do radar. Use o filtro de método para avaliar a qualidade dos pontos antes de uma atividade de campo.
-
-## Testes
-
-Com as dependências instaladas, execute na raiz:
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-Os testes de regressão cobrem a configuração opcional do OneDrive, a indicação de sucesso/falha do processamento, a inclusão de registros sem coordenadas e a classificação de validade na data de vencimento. Usam dados simulados e não acionam APIs nem atualizam a planilha operacional.
-
-Para verificar também o comportamento do mapa e da tabela com DOM e Leaflet simulados, use Node.js, sem instalar pacotes npm:
-
-```powershell
-node tests/test_dashboard_frontend.cjs
-```
-
-## Tecnologias
-
-Python, Pandas, OpenPyXL, Requests, Google Maps Services e python-dotenv no processamento; Flask e Jinja2 no servidor; HTML, CSS, JavaScript e Leaflet no painel. Os recursos externos do mapa e bibliotecas carregadas por CDN dependem de conectividade.
+O sistema executará a extração do PSIE/Inmetro, o download/leitura das bases do DER, DNIT e ANTT, a padronização cadastral dos endereços e a validação geográfica, gerando o arquivo consolidado em `data/processed/medidores_processados.xlsx`.
