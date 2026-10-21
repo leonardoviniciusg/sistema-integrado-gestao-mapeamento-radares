@@ -3,9 +3,10 @@ import sys
 import subprocess
 import threading
 import queue
+import shutil
 import pandas as pd
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, Response, send_file
+from flask import Flask, render_template, jsonify, Response, send_file, request
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(BASE_DIR)
@@ -15,20 +16,27 @@ EXCEL_PATH = os.path.join(BASE_DIR, 'data', 'processed', 'medidores_processados.
 
 process_lock = threading.Lock()
 is_running = False
+ultimo_status_msg = "Pronto para operação"
 log_subscribers = []
 
 def stream_process_output(proc):
-    global is_running
+    global is_running, ultimo_status_msg
     for line in iter(proc.stdout.readline, ''):
         if line:
+            ultimo_status_msg = line.strip()
             for q in list(log_subscribers):
                 q.put(line)
     proc.stdout.close()
-    proc.wait()
+    returncode = proc.wait()
     with process_lock:
         is_running = False
+        ultimo_status_msg = (
+            "Base atualizada com sucesso." if returncode == 0
+            else f"Falha na atualização da base (código {returncode}). Consulte os logs."
+        )
     for q in list(log_subscribers):
-        q.put("[PROCESSO FINALIZADO]\n")
+        q.put(ultimo_status_msg + "\n")
+        q.put("[PROCESSO FINALIZADO]\n" if returncode == 0 else "[PROCESSO FALHOU]\n")
 
 @app.route('/')
 def index():
@@ -44,83 +52,75 @@ def get_dados():
         df_inst = pd.read_excel(EXCEL_PATH, sheet_name='Instrumentos')
         controle_dict = dict(zip(df_ctrl['Parametro'], df_ctrl['Valor']))
 
-        # Totais gerais
-        total_instrumentos = int(len(df_inst))
-        aprovados = int((df_inst['UltimoResultado'] == 'Aprovado').sum())
-        outros = total_instrumentos - aprovados
-
-        # Métodos de identificação
-        metodos = df_inst['metodo_geocodificacao'].value_counts().to_dict()
-
-        # Distribuição de Faixas por Equipamento
-        faixas_dist = df_inst['Faixas'].value_counts().sort_index().to_dict()
-        faixas_dict = {f"{int(k)} Faixa{'s' if k > 1 else ''}": int(v) for k, v in faixas_dist.items()}
-
-        # Análise de Validade Metrológica
-        hoje = datetime.now()
-        dates_val = pd.to_datetime(df_inst['DataValidade'], format='%d/%m/%Y', errors='coerce')
-        
-        vencidos = int((dates_val < hoje).sum())
-        vencer_30d = int(((dates_val >= hoje) & (dates_val <= hoje + timedelta(days=30))).sum())
-        vencer_90d = int(((dates_val > hoje + timedelta(days=30)) & (dates_val <= hoje + timedelta(days=90))).sum())
-        vigentes = int((dates_val > hoje + timedelta(days=90)).sum())
-        sem_data = int(df_inst['DataValidade'].isna().sum())
-
-        validades = {
-            'Vencidos': vencidos,
-            'A Vencer (30d)': vencer_30d,
-            'A Vencer (90d)': vencer_90d,
-            'Vigentes (>90d)': vigentes,
-            'Sem Data': sem_data
-        }
-
-        # Empresas
-        empresas = df_inst['Proprietario.Nome'].fillna('NÃO INFORMADO').value_counts().to_dict()
-
-        # Extração de Anos de Última Verificação
         dates_verif = pd.to_datetime(df_inst['DataUltimaVerificacao'], format='%d/%m/%Y', errors='coerce')
         anos_disponiveis = sorted([int(a) for a in dates_verif.dt.year.dropna().unique()], reverse=True)
 
-        # Radares georreferenciados
+        # Totais da Base Geral (Fixos)
+        hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        dates_val = pd.to_datetime(df_inst['DataValidade'], format='%d/%m/%Y', errors='coerce')
+        total_base = int(len(df_inst))
+        vencidos_base = int((dates_val < hoje).sum())
+        vencer_base = int(((dates_val >= hoje) & (dates_val <= hoje + timedelta(days=90))).sum())
+        vigentes_base = int((dates_val > hoje + timedelta(days=90)).sum())
+        faixas_base = int(df_inst['Faixas'].sum()) if 'Faixas' in df_inst.columns else total_base
+
+        kpis_base = {
+            'total': total_base,
+            'vencidos': vencidos_base,
+            'a_vencer': vencer_base,
+            'vigentes': vigentes_base,
+            'faixas': faixas_base
+        }
+
+        # Listas para seletores de filtros
+        empresas = df_inst['Proprietario.Nome'].fillna('NÃO INFORMADO').value_counts().to_dict()
+        municipios = sorted([str(m) for m in df_inst['Municipio'].dropna().unique()])
+        tipos_local = sorted([str(t) for t in df_inst['tipo_local'].dropna().unique()])
+        resultados = sorted([str(r) for r in df_inst['UltimoResultado'].dropna().unique()])
+        metodos = sorted([str(m) for m in df_inst['metodo_geocodificacao'].dropna().unique()])
+
+        # Itens estruturados para o frontend
         radares = []
         for idx, row in df_inst.iterrows():
             lat, lng = row.get('latitude'), row.get('longitude')
-            if pd.notna(lat) and pd.notna(lng):
-                dt_v = dates_verif.iloc[idx]
-                ano_v = int(dt_v.year) if pd.notna(dt_v) else None
-                radares.append({
-                    'nome': f"{row.get('Municipio', '')} - {row.get('LocalVerificacao', '')}",
-                    'serie': str(row.get('NumeroSerie', '')),
-                    'empresa': str(row.get('Proprietario.Nome', 'NÃO INFORMADO')),
-                    'faixas': int(row.get('Faixas', 1)),
-                    'validade': str(row.get('DataValidade', 'N/A')),
-                    'ultima_verificacao': str(row.get('DataUltimaVerificacao', 'N/A')),
-                    'ano_verificacao': ano_v,
-                    'metodo': str(row.get('metodo_geocodificacao', 'N/A')),
-                    'status': str(row.get('UltimoResultado', 'Indefinido')),
-                    'lat': float(lat),
-                    'lng': float(lng)
-                })
+            tem_coordenadas = pd.notna(lat) and pd.notna(lng)
+            dt_v = dates_verif.iloc[idx]
+            ano_v = int(dt_v.year) if pd.notna(dt_v) else None
+            radares.append({
+                'serie': str(row.get('NumeroSerie', '')),
+                'empresa': str(row.get('Proprietario.Nome', 'NÃO INFORMADO')),
+                'municipio': str(row.get('Municipio', '')),
+                'local': str(row.get('LocalVerificacao', '')),
+                'tipo_local': str(row.get('tipo_local', 'N/A')),
+                'faixas': int(row['Faixas']) if pd.notna(row.get('Faixas')) else 0,
+                'resultado': str(row.get('UltimoResultado', 'Indefinido')),
+                'ultima_verificacao': str(row.get('DataUltimaVerificacao', 'N/A')),
+                'ano_verificacao': ano_v,
+                'validade': str(row.get('DataValidade', 'N/A')),
+                'metodo': str(row.get('metodo_geocodificacao', 'N/A')),
+                'lat': float(lat) if tem_coordenadas else None,
+                'lng': float(lng) if tem_coordenadas else None
+            })
 
         return jsonify({
             'controle': controle_dict,
-            'total': total_instrumentos,
-            'operando': aprovados,
-            'manutencao': outros,
-            'validades': validades,
-            'faixas': faixas_dict,
-            'metodos': metodos,
+            'kpis_base': kpis_base,
             'empresas': empresas,
+            'municipios': municipios,
+            'tipos_local': tipos_local,
+            'resultados': resultados,
+            'metodos': metodos,
             'anos': anos_disponiveis,
             'radares': radares,
-            'is_running': is_running
+            'is_running': is_running,
+            'ultimo_status': ultimo_status_msg
         })
     except Exception as e:
         return jsonify({'erro': str(e)}), 500
 
 @app.route('/api/executar', methods=['POST'])
 def run_main():
-    global is_running
+    global is_running, ultimo_status_msg
     with process_lock:
         if is_running:
             return jsonify({'status': 'busy', 'mensagem': 'Pipeline já em execução.'}), 400
@@ -138,11 +138,28 @@ def run_main():
             bufsize=1
         )
         is_running = True
+        ultimo_status_msg = "Atualizando base (main.py)..."
         t = threading.Thread(target=stream_process_output, args=(proc,))
         t.daemon = True
         t.start()
 
-    return jsonify({'status': 'iniciado', 'mensagem': 'Execução do main.py iniciada.'})
+    return jsonify({'status': 'iniciado', 'mensagem': 'Execução de atualização iniciada.'})
+
+@app.route('/api/limpar-cache', methods=['POST'])
+def limpar_cache():
+    global ultimo_status_msg
+    try:
+        pastas_cache = ['__pycache__', '.cache']
+        removidos = 0
+        for root, dirs, files in os.walk(BASE_DIR):
+            for d in list(dirs):
+                if d in pastas_cache:
+                    shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+                    removidos += 1
+        ultimo_status_msg = f"Cache limpo ({removidos} diretórios removidos)."
+        return jsonify({'status': 'sucesso', 'mensagem': ultimo_status_msg})
+    except Exception as e:
+        return jsonify({'status': 'erro', 'mensagem': str(e)}), 500
 
 @app.route('/api/logs/stream')
 def stream_logs():
@@ -159,21 +176,30 @@ def stream_logs():
 
     return Response(event_stream(), mimetype='text/event-stream')
 
-@app.route('/api/relatorio/<tipo>')
-def baixar_relatorio(tipo):
+@app.route('/api/relatorio/<tipo>', methods=['GET', 'POST'])
+def exportar_relatorio(tipo):
     if not os.path.exists(EXCEL_PATH):
         return jsonify({'erro': 'Base não encontrada'}), 404
 
+    # Se for exportação dos dados filtrados da tabela atual enviados via POST
+    if tipo == 'tabela_filtrada' and request.method == 'POST':
+        itens = request.json.get('itens', [])
+        df_export = pd.DataFrame(itens)
+        nome = f"radares_filtrados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        caminho = os.path.join(os.path.dirname(__file__), nome)
+        df_export.to_csv(caminho, index=False, sep=';', encoding='utf-8-sig')
+        return send_file(caminho, as_attachment=True, download_name=nome)
+
     df_inst = pd.read_excel(EXCEL_PATH, sheet_name='Instrumentos')
-    hoje = datetime.now()
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     dates = pd.to_datetime(df_inst['DataValidade'], format='%d/%m/%Y', errors='coerce')
 
     if tipo == 'vencidos':
         df_export = df_inst[dates < hoje]
-        nome = 'relatorio_radares_vencidos.csv'
+        nome = 'laudos_vencidos.csv'
     elif tipo == 'a_vencer':
         df_export = df_inst[(dates >= hoje) & (dates <= hoje + timedelta(days=90))]
-        nome = 'relatorio_radares_a_vencer_90d.csv'
+        nome = 'laudos_a_vencer_90d.csv'
     elif tipo == 'completo':
         return send_file(EXCEL_PATH, as_attachment=True, download_name='medidores_processados.xlsx')
     else:

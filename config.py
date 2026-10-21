@@ -1,4 +1,8 @@
+import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Diretórios base
 BASE_DIR = Path(__file__).resolve().parent
@@ -6,9 +10,10 @@ DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 GEOCODED_DIR = DATA_DIR / "geocoded"
-# Caminho da pasta corporativa na nuvem (OneDrive - PRODESP)
-ONEDRIVE_DIR = Path(r"C:\Users\Leonardo\OneDrive - PRODESP\IPEM - RSJCA - Documentos\Planilhas Radares - Fonte PSIE")
-ONEDRIVE_EXCEL = ONEDRIVE_DIR / "medidores_processados.xlsx"
+# Pasta local opcional sincronizada pelo OneDrive.
+_onedrive_dir = os.getenv("ONEDRIVE_DIR", "").strip()
+ONEDRIVE_DIR = Path(_onedrive_dir).expanduser() if _onedrive_dir else None
+ONEDRIVE_EXCEL = ONEDRIVE_DIR / "medidores_processados.xlsx" if ONEDRIVE_DIR else None
 
 # Cria os diretórios se não existirem
 for pasta in [RAW_DIR, PROCESSED_DIR, GEOCODED_DIR]:
@@ -30,6 +35,5 @@ MUNICIPIOS_ALVO = [
     "SÃO LUIZ DO PARAITINGA", "SILVEIRAS", "TAUBATÉ", "TREMEMBÉ", "UBATUBA"
 ]
 
-# Caminhos do arquivo fixo e do arquivo versionado com data/hora
-ONEDRIVE_DIR = Path(r"C:\Users\Leonardo\OneDrive - PRODESP\IPEM - RSJCA - Documentos\Planilhas Radares - Fonte PSIE")
-ONEDRIVE_EXCEL_FIXO = ONEDRIVE_DIR / "medidores_processados.xlsx"
+# Alias mantido para compatibilidade com consumidores da configuração.
+ONEDRIVE_EXCEL_FIXO = ONEDRIVE_EXCEL
