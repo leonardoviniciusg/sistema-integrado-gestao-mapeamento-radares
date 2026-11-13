@@ -821,7 +821,7 @@
         dot.style.background = 'var(--warn)';
         labelTxt.innerText = 'Executando main.py...';
 
-        fetch('/api/executar', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token }}' } })
+        fetch('/api/executar', { method: 'POST' })
             .then(r => r.json())
             .then(res => {
                 labelTxt.innerText = res.mensagem;
@@ -837,7 +837,7 @@
     function limparCache() {
         const labelTxt = document.getElementById('terminal-label-txt');
         labelTxt.innerText = 'Limpando cache...';
-        fetch('/api/limpar-cache', { method: 'POST', headers: { 'X-CSRFToken': '{{ csrf_token }}' } })
+        fetch('/api/limpar-cache', { method: 'POST' })
             .then(r => r.json())
             .then(res => {
                 labelTxt.innerText = res.mensagem;
@@ -871,7 +871,7 @@
 
         fetch('/api/relatorio/tabela_filtrada', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': '{{ csrf_token }}' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ itens: itensLimpos })
         })
         .then(response => response.blob())

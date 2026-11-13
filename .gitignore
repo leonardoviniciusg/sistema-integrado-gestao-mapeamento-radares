@@ -16,4 +16,3 @@ data/processed/
 data/geocoded/
 data/raw/medidores_bruto.json
 data/raw/*.xlsx
-.test-deps/
