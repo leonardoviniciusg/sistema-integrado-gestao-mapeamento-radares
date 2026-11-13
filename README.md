@@ -115,3 +115,55 @@ python main.py
 ```
 
 O sistema executará a extração do PSIE/Inmetro, o download/leitura das bases do DER, DNIT e ANTT, a padronização cadastral dos endereços e a validação geográfica, gerando o arquivo consolidado em `data/processed/medidores_processados.xlsx`.
+## Painel Django na rede local
+
+O painel utiliza Django 5.2 e Waitress (compatível com Windows), mantendo a porta 5000.
+Na raiz do projeto, com seu ambiente virtual ativado:
+
+```powershell
+python -m pip install -r requirements.txt
+python dashboard_v1/app.py
+```
+
+Mantenha esse terminal e o computador servidor ligados. Nas outras máquinas da mesma rede,
+abra `http://172.27.152.41:5000` (IP Wi-Fi identificado durante a configuração).
+O servidor escuta em `0.0.0.0`, que significa todas as interfaces; esse endereço não é o URL do navegador.
+Se o IP mudar, consulte `ipconfig` e use o IPv4 do adaptador conectado. Para manter o endereço,
+configure uma reserva DHCP no roteador com o responsável pela rede.
+
+As variáveis opcionais no `.env` são:
+
+```env
+HOST=0.0.0.0
+PORT=5000
+DJANGO_ALLOWED_HOSTS=172.27.152.41
+SERVER_THREADS=32
+# Opcional: uma chave secreta aleatória persistente
+# DJANGO_SECRET_KEY=...
+```
+
+O nome e os IPv4 da máquina são autorizados automaticamente. Adicione nomes DNS ou IPs
+adicionais em `DJANGO_ALLOWED_HOSTS`, separados por vírgula. O modo debug fica desligado
+e os POSTs do painel usam proteção CSRF.
+
+Caso o Firewall do Windows bloqueie o acesso, execute no PowerShell como administrador:
+
+```powershell
+New-NetFirewallRule -DisplayName "PSIE Django 5000 (rede local)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5000 -Profile Private,Domain -RemoteAddress LocalSubnet
+```
+
+O painel compartilha dados e comandos de atualização com quem tem acesso à rede; ele não
+possui login. A rede precisa permitir comunicação entre os dispositivos.
+Use um único processo de servidor: o estado da atualização e os logs são compartilhados entre
+as threads desse processo. Cada aba aberta mantém uma conexão de logs; para muitos usuários,
+ajuste `SERVER_THREADS` (padrão 32) deixando threads livres para as APIs.
+
+Para verificar a configuração ou desenvolver:
+
+```powershell
+python manage.py check
+python manage.py runserver 0.0.0.0:5000 --noreload
+```
+
+Referências: [Django CSRF](https://docs.djangoproject.com/en/dev/howto/csrf/)
+e [Waitress](https://docs.pylonsproject.org/projects/waitress/en/latest/api.html).
